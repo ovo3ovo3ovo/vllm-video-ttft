@@ -170,7 +170,7 @@ class _Sink:
         self.cv = threading.Condition()
         self.gen, self.th, self.arr, self.key, self.result, self.err = 0, None, None, None, None, None
         self.mask, self.closed, self.stats, self.ver, self.gated, self.inline = None, False, {}, None, False, False
-        self.nthreads, self.resize_n = None, None
+        self.nthreads, self.resize_n, self.mc = None, None, None
 
     def _target(self, T, H, W):
         kw = self.kw; size = kw["size"]
@@ -452,6 +452,7 @@ def register():
         sink = _Sink(proc, kw, kwkey, chunk, torch, Qwen3VLVideoProcessor, SizeDict, smart_resize,
                      set_default_torch_num_threads if rn is None else (lambda: set_default_torch_num_threads(rn)))
         sink.resize_n = rn
+        sink.mc = mc                              # this request's ModelConfig (m2_vision_chunk builds its tower from it)
         t0 = time.perf_counter()
         _tls.sink = sink
         try:

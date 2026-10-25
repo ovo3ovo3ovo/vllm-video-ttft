@@ -131,14 +131,14 @@ class _Runner:
             return cls._inst
 
     def __init__(self):
-        self.q, self.tower, self.err, self.device = queue.Queue(), None, None, None
+        self.q, self.tower, self.err, self.err_at, self.device = queue.Queue(), None, None, 0.0, None
         self.ready = threading.Event()
         threading.Thread(target=self._loop, name="m2_vision_chunk", daemon=True).start()
 
     def put(self, item):
         self.q.put(item)
 
-    def _build(self):
+    def _build(self, mc):
         import torch
         if os.environ.get("M2_VC_FAKE") == "1":
             self.device = "cpu"
@@ -148,9 +148,8 @@ class _Runner:
         dev = os.environ.get("M2_VC_DEVICE")
         if not dev:
             raise RuntimeError("M2_VC_DEVICE is not set (the GPU the API server's tower copy runs on)")
-        mc = _MC[0]
         if mc is None:
-            raise RuntimeError("no model config seen yet")
+            raise RuntimeError("tower part came without the request's ModelConfig")
         from safetensors import safe_open
         from vllm.config import ModelConfig, VllmConfig, set_current_vllm_config
         from vllm.distributed import parallel_state as ps
@@ -219,15 +218,18 @@ class _Runner:
 
     def _loop(self):
         while True:
-            st, b, seq, (pv, grid) = self.q.get()
+            st, b, seq, (pv, grid, mc) = self.q.get()
             t0 = time.perf_counter()
             try:
-                if self.tower is None and self.err is None:
+                # a failed build is retried after M2_VC_RETRY_S (a GPU that was busy at the first request must not
+                # disable the tower for the server's lifetime); parts arriving in between fail fast with that error
+                if self.tower is None and (self.err is None or
+                                           time.monotonic() - self.err_at >= float(os.environ.get("M2_VC_RETRY_S", 60))):
                     try:
-                        self._build()
+                        self._build(mc); self.err = None
                     except Exception as e:
-                        self.err = f"tower build failed: {e!r}"[:300]
-                if self.err is not None:
+                        self.err, self.err_at = f"tower build failed: {e!r}"[:300], time.monotonic()
+                if self.tower is None:
                     raise RuntimeError(self.err)
                 emb = self.tower(pv, grid)
                 st.finish(b, seq, emb, time.perf_counter() - t0)
@@ -235,7 +237,6 @@ class _Runner:
                 st.finish(b, seq, None, time.perf_counter() - t0, err=f"{e!r}"[:300])
 
 last_pv = [None]
-_MC = [None]            # the ModelConfig of the first served request (the tower is built from its model path / dtype)
 
 def _set(st):
     _tls.status = st
@@ -285,7 +286,7 @@ def register():
         T = arr.shape[0]
         r0, tg = (lo // TP) * gh * gw, math.ceil((hi - lo) / TP)
         st = _state_for(out, T, TP, self.chunk)
-        st.submit(lo // self.chunk, (out[r0:r0 + tg * gh * gw], (tg, gh, gw)))
+        st.submit(lo // self.chunk, (out[r0:r0 + tg * gh * gw], (tg, gh, gw), self.mc))
 
     def preprocess(self, videos, **kwargs):
         res = pipe_preprocess(self, videos, **kwargs)
@@ -298,7 +299,7 @@ def register():
             return res
         if pst.get("path") == "pipe-inline":       # one block: nothing overlapped, run it here as one part
             g = res["video_grid_thw"][0].tolist()
-            st = _State(1); st.submit(0, (pv, tuple(g)))
+            st = _State(1); st.submit(0, (pv, tuple(g), getattr(_tls, "mc", None)))
             _tls.pending = ("inline", st)
             return res
         with _lock:
@@ -309,9 +310,11 @@ def register():
     def _apply_hf_processor_main(self, mm_items, hf_kwargs):
         if not _on():
             return orig_main(self, mm_items, hf_kwargs)
-        _MC[0] = _MC[0] or self.info.ctx.model_config
-        _tls.pending = None
-        out = orig_main(self, mm_items, hf_kwargs)
+        _tls.pending, _tls.mc = None, self.info.ctx.model_config
+        try:
+            out = orig_main(self, mm_items, hf_kwargs)
+        finally:
+            _tls.mc = None
         pend, _tls.pending = getattr(_tls, "pending", None), None
         if "pixel_values_videos" not in out:
             return out                             # no video in this request

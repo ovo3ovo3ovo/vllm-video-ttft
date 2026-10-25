@@ -2,7 +2,8 @@
 
 One entry point (vllm.general_plugins -> register) for four sub-plugins kept as their own top-level modules, byte for
 byte the versions validated on 8x RTX 5090 (VENDORED.sha256), except m2_vision_chunk, which later gained
-_tower_weight_files (d50d776: read a single unsharded model.safetensors when there is no shard index):
+_tower_weight_files (d50d776: read a single unsharded model.safetensors when there is no shard index) and builds
+its tower from the ModelConfig each part carries, retrying a failed build (10-25: long video as first request):
   m2_seg_decode       slice-parallel OpenCV decode (+ skip non-reference frames, background buffer release)   any model on vLLM's OpenCV path
   m2_copyfree_resize  resize/patchify without the extra copies                                                 Qwen3-VL video processor only
   m2_pipe_resize      resize/patchify while the decoder is still running                                       Qwen3-VL video processor only
