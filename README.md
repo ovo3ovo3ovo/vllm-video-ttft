@@ -156,7 +156,7 @@ M2_SEG_WNODES   = C_node
 ### CPU: segmenting threshold
 
 - `M2_SEG_MIN_SRC_FRAMES` (default 2642): a video is segmented only when the number of raw frames decode has to grab reaches this value. Raw frames = duration × source frame rate.
-- This value was set on 48 physical cores. Among our 100 speed-test videos, every video above 2642 frames was faster with segmenting; below it some were faster and some slower (the 4 raw videos below the threshold: 1479 frames 0.015 s slower, 2006 frames 0.085 s slower, 1500 frames 0.008 s faster, 1838 frames 0.175 s faster), and all 70 short clips were slower. 2642 is the smallest value "above which every video is faster", not the crossover point.
+- This value was set on 48 physical cores. Among our 100 speed-test videos, every video above 2642 frames was faster with segmenting; below it some were faster and some slower (the 5 raw videos below the threshold: 1479 frames 0.015 s slower, 2006 frames 0.085 s slower, 1153 frames 0.045 s faster, 1500 frames 0.008 s faster, 1838 frames 0.175 s faster), and all 70 short clips were slower. 2642 is the smallest value "above which every video is faster", not the crossover point.
 - On machines with fewer cores, the fixed cost of segmenting is a larger share, so the crossover moves up (inferred). How to check: run selfcheck on two or three videos whose raw frame counts are near the threshold and compare the seconds in the `off` and `exact` rows; if segmenting is slower, raise the threshold. selfcheck runs each setting only once, so it shows the direction, not a precise value.
 
 ### GPU: single GPU vs. multiple GPUs
