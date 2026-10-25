@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-video-ttft"
+version = "0.1.0"
+description = "vLLM 0.31.0 plugin: shorter time-to-first-token for video requests (slice-parallel decode, copy-free and pipelined resize, vision tower overlapped with decode)"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "ovo3ovo3ovo", email = "ovo3ovo3ovo@gmail.com" }]
+requires-python = ">=3.12"
+dependencies = [
+    "vllm==0.31.0",
+    "transformers==5.17.0",
+    "opencv-python-headless==5.0.0.93",
+]
+
+[project.entry-points."vllm.general_plugins"]
+vllm_video_ttft = "vllm_video_ttft:register"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+packages = ["vllm_video_ttft", "m2_copyfree_resize", "m2_seg_decode", "m2_pipe_resize", "m2_vision_chunk"]

@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+*.mp4
+*.webm
+*.mkv
+*.log
+videos15/
+selfcheck*.json
+PROGRESS.md
