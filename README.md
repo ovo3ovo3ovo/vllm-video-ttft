@@ -25,8 +25,8 @@ VLLM_VIDEO_TTFT_PRESET=exact vllm serve /path/to/model --mm-processor-cache-gb 0
 
 | 插件 | 开关 | 省的是哪一步 | 适用模型 | 改不改输出 | 代价 |
 |---|---|---|---|---|---|
-| 切段并行解码 | `M2_SEG_DECODE=1` | 解码：按关键帧把一段视频切成多段，用进程池并行解 | 通用：凡是走 vLLM 默认 OpenCV 解码的都行 | 不改（逐位相同） | 进程池常驻内存中位 0.85–1.0 GiB、最多 2.6 GiB；每个切段的长片请求约 31 CPU 核秒 |
-| 跳过非参考帧 | `M2_SEG_SKIP_NONREF=1` | 解码：没被抽中、也不被别的帧参考的帧不解 | 同上，叠在切段解码上 | 不改 | 无额外代价；只对含 B 帧或非参考帧的视频有用 |
+| 切段并行解码 | `M2_SEG_DECODE=1` | 解码：按关键帧把一段视频切成多段，用进程池并行解 | 通用：凡是走 vLLM 默认 OpenCV 解码的都行 | 不改（逐位相同） | 进程池常驻内存中位 0.85–1.0 GiB、最多 2.6 GiB；切段请求平均约 31 CPU 核秒（含热身），按长度 12–57 |
+| 跳过非参考帧 | `M2_SEG_SKIP_NONREF=1` | 解码：没被抽中、也不被别的帧参考的帧不解 | 同上，叠在切段解码上 | 不改 | 总耗时持平（只有 I/P 帧的长片，帧表那一步多 0.03–0.05 s，被波动盖住）；只对含 B 帧或非参考帧的视频有用 |
 | 去掉缩放切块里多余的拷贝 | `M2_COPYFREE_RESIZE=1` | 缩放切块 | 只限 Qwen3-VL 系 | 不改 | 无 |
 | 边解码边缩放 | `M2_PIPE_RESIZE=1` | 缩放切块和解码重叠 | 只限 Qwen3-VL 系；要求 `--mm-processor-cache-gb 0` | 不改 | 多一个缩放线程 |
 | 视觉塔分块叠进流水线 | `M2_VISION_CHUNK=1` | 视觉塔和解码、缩放重叠，在 API 进程里算 | 只限 Qwen3-VL 系；依赖边解码边缩放 | **改**：视觉塔输出 bf16 末位不同（相对差中位 2.9%） | 一张卡上多放一份视觉塔（Qwen3.8 实测最多 3.0 GiB） |
@@ -57,14 +57,14 @@ VLLM_VIDEO_TTFT_PRESET=exact vllm serve /path/to/model --mm-processor-cache-gb 0
 
 | 模型系列 | 架构名（config.json） | 例子 | 切段解码 + 跳帧 | 去拷贝 / 边解码边缩放 | 视觉塔分块 | 依据 |
 |---|---|---|---|---|---|---|
-| Qwen3.8-Flash-Next | `Qwen4ExpForConditionalGeneration` | Qwen/Qwen3.8-Flash-Next | 能开 | 能开 | 能开 | **实测**：8×5090、TP8，908 段逐位相同，服务内测速、精度 750 题 |
+| Qwen3.8-Flash-Next | `Qwen4ExpForConditionalGeneration` | Qwen/Qwen3.8-Flash-Next | 能开 | 能开 | 能开 | **实测**：8×5090、TP8，908 段逐位相同，服务内测速；精度：视觉塔分块 250 题（另外，原生选项"视觉塔每卡一整份"考过 500 题） |
 | Qwen3-VL（含 MoE） | `Qwen3VLForConditionalGeneration`、`Qwen3VLMoeForConditionalGeneration` | Qwen/Qwen3-VL-2B-Instruct | 能开 | 能开 | 能开 | 读代码：同一个视频处理器（`Qwen3VLVideoProcessor`）和视觉塔类；未在服务里测，用 selfcheck 确认 |
 | Qwen3.5、Cosmos3-Edge、InternS1-Pro / InternS2 等用 Qwen3-VL 视觉塔的 | 各自不同 | — | 能开 | 看视频处理器是不是 `Qwen3VLVideoProcessor` | 推断：可能能开 | 推断：源码里复用了 Qwen3-VL 的类，但处理器和模板可能不同；用 selfcheck 确认 |
 | Qwen2.5-VL / Qwen2-VL | `Qwen2_5_VLForConditionalGeneration`、`Qwen2VLForConditionalGeneration` | Qwen/Qwen2.5-VL-7B-Instruct | 能开 | 不生效 | 不生效 | 读代码：视频后端 `qwen2_vl` 继承默认 OpenCV 路径；处理器是 `Qwen2VLVideoProcessor`，不是挂点 |
 | LLaVA-NeXT-Video | `LlavaNextVideoForConditionalGeneration` | llava-hf/LLaVA-NeXT-Video-7B-hf | 能开 | 不生效 | 不生效 | 读代码：没有注册专门的视频后端，用默认 OpenCV；未验证，用 selfcheck 确认 |
-| LLaVA-OneVision | `LlavaOnevisionForConditionalGeneration` | llava-hf/llava-onevision-qwen2-7b-ov-hf | 能开 | 不生效 | 不生效 | 同上 |
+| LLaVA-OneVision | `LlavaOnevisionForConditionalGeneration` | llava-hf/llava-onevision-qwen2-0.5b-ov-hf | 能开 | 不生效 | 不生效 | **实测（处理器级，CPU）**：3 段视频，`all` 预设下像素和不开插件逐位相同；两段长片切段 + 跳帧生效；去拷贝、边解码边缩放、视觉塔分块都让路 |
 | InternVL | `InternVLChatModel` 等 | OpenGVLab/InternVL3-8B | 能开 | 不生效 | 不生效 | 同上 |
-| Gemma 系（带视频的） | `Gemma4ForConditionalGeneration` 等 | google/gemma-4-E2B-it | 能开 | 不生效 | 不生效 | 同上 |
+| Gemma 系（带视频的） | `Gemma4ForConditionalGeneration` 等 | google/gemma-4-E2B-it | 能开 | 不生效 | 不生效 | **实测（处理器级，CPU）**：同 LLaVA-OneVision 那一行 |
 | GLM-4.1V / GLM-4.5V / GLM-4.6V | `Glm4vForConditionalGeneration` 等 | — | 能开 | 不生效 | 不生效 | 读代码：后端 `opencv_dynamic` / `glm46v` 继承默认 OpenCV 路径 |
 | GLM-5-Next 视频 | — | — | **不生效** | 不生效 | 不生效 | 读代码：它的后端重写了 `read_frames`，切段解码会自动让路（日志 `loader overrides read_frames`） |
 | Molmo2、OpenPangu-VL | — | — | 推断：可能能开 | 不生效 | 不生效 | 推断：它们直接调用 `decode_video`，没核实最后是不是走 `decode_opencv` |
@@ -82,15 +82,16 @@ VLLM_VIDEO_TTFT_PRESET=exact vllm serve /path/to/model --mm-processor-cache-gb 0
 | 开着处理器缓存（`--mm-processor-cache-gb > 0`） | 边解码边缩放、视觉塔分块 | 缓存命中时不会重新解码，流水线插件会让路。我们的测量都是 `--mm-processor-cache-gb 0` |
 | 换了解码后端（`--media-io-kwargs '{"video":{"backend":"pynvvideocodec"或"torchcodec"}}'`） | 切段解码、跳帧，以及依赖它的流水线 | 切段解码只接管 OpenCV 路径；换了后端就接管不到 |
 | `frame_recovery=True` | 切段解码 | vLLM 的坏帧恢复扫描没有重新实现，自动走原路径 |
-| 高并发、CPU 吃紧 | 切段解码要谨慎 | 每个切段的长片请求约 31 CPU 核秒，常驻内存最多 2.6 GiB；我们只测了单请求，没测过高并发下的吞吐 |
+| 高并发、CPU 吃紧 | 切段解码要谨慎 | 切段请求平均约 31 CPU 核秒（按长度 12–57），常驻内存最多 2.6 GiB；我们只测了单请求，没测过高并发下的吞吐 |
 | 显存没有余量的卡 | 视觉塔分块 | 要多放一份视觉塔；放不下时插件会报 OOM 并交回 worker（严格模式下报错） |
 | 视频都很短（原始帧数 < `M2_SEG_MIN_SRC_FRAMES`，默认 2642） | 切段解码开着也没用 | 短片不切段；短片首字等待的大头在预填充，插件省得少 |
 
 ### 插件不生效时会怎样（读代码确认）
 
-- 每种不生效的原因，在日志里只打一次 warning（例如 `m2_seg_decode: falling back ...`、`m2_pipe_resize: not served (...)`），然后走 vLLM 原来的路径，结果和没装插件一样。
+- 每种不生效的原因，在日志里只打一次 warning（例如 `m2_seg_decode: using vLLM's decoder (...)`、`m2_pipe_resize: not using the pipelined result (...)`、`m2_vision_chunk: not served (...)`），然后走 vLLM 原来的路径，结果和没装插件一样。
 - vLLM 或 transformers 版本不对：插件打一行 warning，不注册（严格模式下启动报错）。
-- 模型不是 Qwen3-VL 系：去拷贝和视觉塔分块的挂点根本不会被调用；边解码边缩放在第一次请求时发现拿不到 Qwen3-VL 的处理参数，记住这次失败，以后直接让路。
+- 模型不是 Qwen3-VL 系：去拷贝和视觉塔分块的挂点根本不会被调用；边解码边缩放在第一次请求时用一次试跑发现拿不到 Qwen3-VL 的处理参数，记住这次失败，以后直接让路，日志只打一行 `not using the pipelined result (...)`。实测（Gemma-4-E2B、LLaVA-OneVision，CPU，各 3 段视频 × 2 次）：试跑只在第一个请求做 1 次，之后 0 次；没有异常，不卡住。
+- 非 Qwen3-VL 模型上开 `M2_STRICT=1` 并打开边解码边缩放（比如 `all` 预设），每个请求都会报 `M2StrictError: m2_pipe_resize: could not compute this request's processor kwargs ...`：这是严格模式的本意（插件该接管却没接管就报错），不会悄悄算错。非 Qwen 模型只开切段解码和跳帧就行，selfcheck 对非 Qwen 模型也只测这两项。
 
 ---
 
@@ -108,7 +109,7 @@ VLLM_VIDEO_TTFT_PRESET=exact vllm serve /path/to/model --mm-processor-cache-gb 0
 | 缩放切块 | `OMP_NUM_THREADS`；开了边解码边缩放以后，和解码同时跑 | 每个视频 |
 | vLLM 调度进程 + API 主线程 | 约 1–2 个核 | 一直在 |
 
-三项加起来，不要超过 API 所在 socket 上能用的核数。超线程的逻辑核不能算满额：我们的 64 个解码线程跑在 48 个物理核、96 个逻辑核上，是测下来最快的配置。
+三项加起来，不要超过 API 所在 socket 上能用的核数。超线程的逻辑核不能算满额。段数扫描是在一个 NUMA 节点上做的（24 个物理核、48 个逻辑核），64 个解码线程（16 段 × 4 线程）是那组扫描里最快的；服务里用两个节点（48 个物理核、96 个逻辑核），只跑过 16 × 4 这一组，没再扫。
 
 ### CPU：怎么分配
 
@@ -119,7 +120,7 @@ VLLM_VIDEO_TTFT_PRESET=exact vllm serve /path/to/model --mm-processor-cache-gb 0
    - 帧缓冲跟着服务的 `--membind` 走。
    - 实测：离线把主进程钉到另一个 socket，35 分钟原片的帧拷回从 1.06 s 涨到 1.72 s，vLLM 原解码从 7.10 s 涨到 8.27 s。服务里用不拷贝的方式时，钉错的代价小得多，只有缩放切块慢 6–10%，但仍然建议钉在同一个 socket。
    - 不设 `M2_SEG_WNODES` / `M2_SEG_WCPUS` 时，本插件默认用本进程允许用的全部核。
-3. **段数和每段线程数怎么取舍**（实测，离线，同一台机器）：
+3. **段数和每段线程数怎么取舍**（实测，离线，同一台机器，只用一个 NUMA 节点：24 个物理核、48 个逻辑核）：
 
    | 视频（原始帧数） | vLLM 原解码 | 每段 1 线程：8 段 / 16 段 / 32 段 | 每段 4 线程：8 段 / 16 段 / 32 段 |
    |---|---|---|---|
@@ -131,6 +132,7 @@ VLLM_VIDEO_TTFT_PRESET=exact vllm serve /path/to/model --mm-processor-cache-gb 0
    - 每段 1 线程时，切 8 段有一段已经比原解码快，另两段要 16 段才快。核少的机器上，每段 1 线程、段数多一点，可能比每段 4 线程划算（推断）。
    - FFmpeg 自己的多线程已经开着：vLLM 原解码默认就是多线程，强制 1 线程会慢 6–8 倍。所以核少的机器上，切段解码的收益会明显小于下面结果表里的数（推断）。
 4. **缩放切块线程数（`OMP_NUM_THREADS`）**：从 1 线程改成 12 线程，缩放切块降到原来的 0.36–0.46，省的几乎都在"转张量"那一步。不设时 vLLM 会把 API 进程降到 1 线程，所以一定要设。超过 12 线程有没有收益，我们没测。
+5. **只调缩放切块的线程数（`M2_PIPE_RESIZE_THREADS`，开了边解码边缩放时才有用）**：不设时用 `OMP_NUM_THREADS`。实测（离线，15 段视频，和不设交替 3 遍）：4 线程以上各档，原片只差 1–3%，短片差 5–8%（只有几毫秒）；2 线程慢 2–6%，1 线程慢 5–20%。变慢的是解码那一段，里面包含和解码重叠进行的缩放，不是解码本身变慢。设了这个开关时的并发没有实测。
 
 ### CPU：经验公式（probe 用的就是这个）
 
@@ -140,19 +142,19 @@ L = 这些节点的逻辑核数 − 当前 1 分钟负载
 P = 这些节点的物理核数 − 当前 1 分钟负载
 
 OMP_NUM_THREADS = clamp(P / 4, 1, 12)
-D               = min(64, 2·L / 3)                # 切段解码的线程总数
+D               = min(64, 4·L / 3)                # 切段解码的线程总数
 M2_SEG_THREADS  = 4 if D ≥ 16 else 1
 M2_SEG_N        = clamp(D / M2_SEG_THREADS, 2, 16)
 M2_SEG_WNODES   = C_node
 ```
 
-- 实测依据：机器空闲时，这个公式在我们这台机器上（P = 48，L = 96）算出 `OMP_NUM_THREADS=12`、16 段 × 4 线程，正好是实测最好的那组。
-- 推断：公式里的比例（1/4、2/3）是从这一个点外推的，没在别的核数上测过。核少的机器请用 selfcheck 打印的耗时比较两三组设置。
+- 实测依据：`D = 4·L / 3` 来自段数扫描那一组条件（一个 NUMA 节点，L = 48 个逻辑核）下最快的 64 个线程（16 段 × 4 线程）；32 段不再变快，所以上限取 64。`OMP_NUM_THREADS` 只测过 1 对 12。
+- 外推：在两个节点（L = 96）上，公式也给出 16 × 4（上限封顶），服务里用的就是这组，但没在 96 核上扫别的组合；核比 48 少的机器上算出的值，以及比例 1/4、4/3 本身，都没在别的核数上测过。核少的机器请用 selfcheck 打印的耗时比较两三组设置。
 
 ### CPU：切段门槛
 
 - `M2_SEG_MIN_SRC_FRAMES`（默认 2642）：解码要抓的原始帧数达到这个值才切段。原始帧数 = 时长 × 原视频帧率。
-- 这个值是在 48 个物理核上定的：我们 100 段测速视频里，2642 帧以上的每段都是切段更快，以下的切段反而慢。
+- 这个值是在 48 个物理核上定的：我们 100 段测速视频里，2642 帧以上的每段都是切段更快；以下有快有慢（门槛以下 4 段原片：1479 帧慢 0.015 s、2006 帧慢 0.085 s，1500 帧快 0.008 s、1838 帧快 0.175 s），70 段短片全都更慢。2642 是"在它以上每段都更快"的最小值，不是快慢的交叉点。
 - 核少的机器上，切段的固定开销占比更大，交叉点会往上移（推断）。判断方法：拿两三段原始帧数在门槛附近的视频跑 selfcheck，比较 `off` 和 `exact` 两行的秒数；切了反而慢，就把门槛往上调。selfcheck 每种设置只跑一次，看的是方向，不是精确值。
 
 ### GPU：单卡和多卡分开看
@@ -160,18 +162,18 @@ M2_SEG_WNODES   = C_node
 | 设置 | 单卡（TP=1） | 多卡（TP>1） |
 |---|---|---|
 | `--mm-encoder-tp-mode data` | 开不开都一样 | 建议开：每张卡放一整份视觉塔，不用跨卡切分。代价是每张卡多占一份视觉塔的显存 |
-| `VLLM_MQ_MAX_CHUNK_BYTES_MB` | **别设**：只有一个 worker 时，vLLM 不走这条广播通道（`vllm/config/parallel.py:1033`） | 建议设成大于单条请求里最大的那份消息：不开视觉塔分块时发的是像素（我们的原片 106–145 MiB），开了以后发的是视觉特征（最大约 70 MiB）。默认 16 MiB，超过的消息改走 zmq，慢一截。我们用 256：原片的交接时间降到 0.59–0.65 倍，首字等待快 2–4%。代价是共享内存约 10 × 这个值，256 时实测多占 2.34 GiB |
+| `VLLM_MQ_MAX_CHUNK_BYTES_MB` | **别设**：只有一个 worker 时，vLLM 不用多进程执行器（`vllm/config/parallel.py:1033` 选 uni 执行器），而这条广播环只在多进程执行器里按这个值建（`vllm/v1/executor/multiproc_executor.py:151`） | 建议设成大于单条请求里最大的那份消息：不开视觉塔分块时发的是像素（我们的原片 106–142 MiB），开了以后发的是视觉特征（我们的 100 段里最大 60.5 MiB）。默认 16 MiB，超过的消息改走 zmq，慢一截。我们用 256：原片的交接时间降到 0.59–0.65 倍，首字等待快 2–4%。代价是共享内存约 10 × 这个值：256 时广播环实测 2.5 GiB，比默认（按公式 10 × 16 MiB = 160 MiB，没实测）多约 2.34 GiB |
 | 视觉塔分块的 `M2_VC_DEVICE` | 就用这张卡（只有一张可见卡时，本插件自动设成 `cuda:0`） | 必须显式设一张有余量的卡 |
 | 给视觉塔分块留显存 | `--gpu-memory-utilization` 要给它留出空间，否则会和 KV cache 抢。Qwen3.8 的视觉塔实测最多 3.0 GiB；小模型的视觉塔小得多，按视觉塔参数量 × 2 字节估，再加激活 | 同左，只算放视觉塔的那一张 |
 
 ### GPU：为什么默认不用 GPU 解码
 
-vLLM 自带 NVDEC / torchcodec 解码（`--media-io-kwargs '{"video":{"backend":"pynvvideocodec"}}'` 或 `{"backend":"torchcodec","device":"cuda"}`），我们测过，默认不推荐：
+vLLM 自带两种 GPU 解码：pynvvideocodec（`--media-io-kwargs '{"video":{"backend":"pynvvideocodec"}}'`，NVDEC 解完把帧拷回主机）和 torchcodec cuda（`{"backend":"torchcodec","device":"cuda"}`，帧留在显存里）。我们都测过，默认不推荐：
 
-- **帧落在显存里**：卡被语言模型占满时，长片会 OOM。我们在 `--gpu-memory-utilization 0.85` 下用 torchcodec cuda，一段 305 s 的视频要 1.6 GiB，直接失败。
-- **会改像素**：NVDEC 解出的像素和 OpenCV 不同，我们的视频里最多差 17 个灰度。
-- **单路 NVDEC 解长片不比 CPU 快**：768 帧 720p，NVDEC 6.81 s，OpenCV 6.93 s。pynvvideocodec 的 `hw_decoders` 只是给并发请求分路，不会把一段视频拆开并行解。
-- **可以试的情况**：GPU 有富余显存、不要求逐位相同、视频以 1080p 的短片为主时，NVDEC 能省掉一部分 CPU。注意它和切段解码互斥。
+- **pynvvideocodec 比原生 OpenCV 快，但比切段解码慢**：服务里实测，解码那一步降到原生 OpenCV 的 0.26–0.80（短片 0.26，原片各组 0.69–0.80），>30 分钟组首字等待降到 0.74 倍；可插件仍比它快 1.10–3.80 倍（见结果表 2）。它和切段解码不能同时用（切段解码只接管 OpenCV 路径）。解码器上下文约占 1.25 GiB 显存。
+- **pynvvideocodec 会改像素**：解出的像素和 OpenCV 不同，我们的视频里最多差 17 个灰度。它的 `hw_decoders` 只是给并发请求分路，不会把一段视频拆开并行解。
+- **torchcodec cuda 在显存被占满时会 OOM**：帧留在显存里，我们在 `--gpu-memory-utilization 0.85` 下，一段 305 s 的视频要 1.6 GiB，直接失败。它也会改像素。
+- **可以试的情况**：不要求逐位相同、CPU 很紧、GPU 有余量（torchcodec cuda 还要显存余量能放下整段视频的帧）时，可以试 pynvvideocodec。
 
 ### GPU：硬件限制
 
@@ -250,7 +252,7 @@ python -m vllm_video_ttft.selfcheck --model 模型目录 videos15/*.mp4 --out se
 
 selfcheck 对每段视频依次跑 `off`、`exact`、`all`（`all` 只在 Qwen3-VL 系、并且有可见 GPU 时跑），比较 `pixel_values_videos` 和 `video_grid_thw`，并检查每个插件是否 served。全部通过时退出码为 0。
 
-本仓库发布前在 8×5090 那台机器上跑过一遍（Qwen3.8-Flash-Next，3 段视频：一段 3.5 s 的短片、一段 120 s 的原片、一段 305 s 的原片；`all` 用一张空卡）：
+本仓库发布前在 8×5090 那台机器上跑过（Qwen3.8-Flash-Next，3 段视频：一段 3.5 s 的短片、一段 120 s 的原片、一段 305 s 的原片）。第一次跑 `all` 时，两段长片建视觉塔 OOM（选中的卡上还留着一个占卡程序，没有余量），`all` 那几格 FAIL；腾出一张空卡后第二次全部 PASS，下表是第二次。这也正好说明"显存没有余量时视觉塔分块会 OOM"：严格模式下报错，不开严格模式时交回 worker 自己的视觉塔。
 
 | 视频 | off | exact | all |
 |---|---|---|---|
@@ -260,11 +262,13 @@ selfcheck 对每段视频依次跑 `off`、`exact`、`all`（`all` 只在 Qwen3-
 
 这些秒数是离线单次的解码 + 预处理耗时，不是服务里的首字等待。
 
+非 Qwen 模型（`llava-hf/llava-onevision-qwen2-0.5b-ov-hf`，CPU，同样 3 段视频）：selfcheck 只测 `exact`（非 Qwen 模型上就是切段解码 + 跳帧），3/3 PASS，两段长片走了跳帧，短片按门槛没切段。
+
 ---
 
 ## 版本和限制
 
-- **锁死** vLLM 0.31.0、transformers 5.17.0、opencv-python-headless 5.0.0.93。插件替换的是 vLLM 和 transformers 的内部函数，版本不对时插件会拒绝加载。opencv 版本不对时，跳帧那条路会自动关掉。
+- 目前只支持 vLLM 0.31.0、transformers 5.17.0、opencv-python-headless 5.0.0.93。插件替换的是这些库的内部函数，vLLM 或 transformers 版本不对时会打一行警告、不加载；opencv 版本不对时，跳帧那条路会自动关掉。
 - torch 2.13.0+cu130 不放在依赖里：请按 PyTorch 官网装 cu130 版，再装本包。
 - 只在一台 8×RTX 5090 上测过。换一台机器，尤其是核少的机器，收益会不一样。
 - 只测了单请求的首字等待，没测高并发吞吐。
@@ -278,11 +282,17 @@ selfcheck 对每段视频依次跑 `off`、`exact`、`all`（`all` 只在 Qwen3-
 src/vllm_video_ttft/     入口（预设、默认值、版本检查）、probe、selfcheck
 src/m2_seg_decode/       切段并行解码 + 跳过非参考帧 + 帧缓冲后台释放
 src/m2_copyfree_resize/  去掉缩放切块里多余的拷贝
-src/m2_pipe_resize/      边解码边缩放（含 M2_PIPE_RESIZE_THREADS：单独设缩放线程数，不设时行为不变）
+src/m2_pipe_resize/      边解码边缩放（含 M2_PIPE_RESIZE_THREADS：单独设缩放线程数）
 src/m2_vision_chunk/     视觉塔分块叠进流水线
 tools/pick_videos15.py   从公开数据集抽测试视频
-VENDORED.sha256          四个插件的文件哈希（和验证时的版本逐字节一致）
+VENDORED.sha256          四个插件的文件哈希（各自和哪次验证的版本相同，见下面"插件版本"）
 ```
+
+## 插件版本
+
+- `m2_seg_decode`（含帧缓冲后台释放）、`m2_copyfree_resize`：和服务内测速用的版本逐字节相同。
+- `m2_vision_chunk`：和服务内测速用的版本逐字节相同；和考精度的那一版不同，差别只在状态字段，以及给计时打点留像素的那几行，算视觉塔的部分没动。服务内另外核过：100 段视频送进视觉塔的输入和上一行（不开视觉塔分块）逐段相同。
+- `m2_pipe_resize`：多了 `M2_PIPE_RESIZE_THREADS` 开关。结果表测的是没有这个开关的版本；不设开关时计算路径和那一版完全相同，只多了一个只读的线程数记录（独立核查逐行读过 diff）。设了开关时串行验收通过（五档各 36 条和不设逐位相同；全量 908 段两遍逐段相同；计时 15 段 × 5 档 75/75 逐位相同，线程数每档都等于设定值），设了开关时的并发还没测。
 
 ## 许可证
 

@@ -97,10 +97,12 @@ def main():
                 o = proc.apply(ProcessorInputs(ids, items, hf_processor_mm_kwargs={}), TimingContext())
         dt = time.perf_counter() - t0
         it = o["mm_kwargs"]["video"][0]
-        pv = it["pixel_values_videos"].data if "pixel_values_videos" in it else vc.last_pv[0]
+        key = next((k for k in ("pixel_values_videos", "pixel_values") if k in it), None)
+        pv = it[key].data if key else vc.last_pv[0]   # all: the tower copy replaced it, check what it was fed
         seg = getattr(media, "m2_seg_status", None) or {}
         st = lambda m: {k: v for k, v in ((getattr(m._tls, "status", None) or {}).items()) if k in ("served", "why", "path")}
-        return {"pv": _h(pv) if pv is not None else None, "grid": it["video_grid_thw"].data.tolist(),
+        return {"pv": _h(pv) if pv is not None else None, "grid": (it["video_grid_thw"].data.tolist() if "video_grid_thw" in it
+                         else list(pv.shape) if pv is not None else None),
                 "embeds": "video_embeds" in it, "seconds": round(dt, 3),
                 "seg": {k: seg.get(k) for k in ("served", "why", "path", "gated", "slices", "decode_path")},
                 "copyfree": st(cf), "pipe": st(pipe), "vision_chunk": st(vc)}

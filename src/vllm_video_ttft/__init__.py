@@ -122,6 +122,7 @@ def _guard_pipe_non_qwen():
         e = failed.get(id(model_config))
         if e is not None and e[0] is model_config:
             raise e[1]
+        _params_for.dummy_runs += 1             # how often the dummy apply really ran (selfcheck reads it)
         try:
             return orig(model_config, mm_kwargs)
         except RuntimeError as x:
@@ -129,6 +130,7 @@ def _guard_pipe_non_qwen():
                 failed[id(model_config)] = (model_config, x)
             raise
     _params_for._vvt_guard = True
+    _params_for.dummy_runs = 0
     pipe._params_for = _params_for
 
 

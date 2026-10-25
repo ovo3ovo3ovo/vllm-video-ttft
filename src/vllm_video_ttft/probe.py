@@ -117,9 +117,10 @@ def decide(c, m, g, model, tp):
 
 
 def suggest(c, decisions, free_phys, g, tp):
-    """The formula in README "怎么按机器选参数".  Measured on one box (2x Xeon 8558, nodes 0+1 = 48 physical / 96 logical
-    cores for the API side): OMP 12 vs 1, 16 slices x 4 threads best, 32 slices no faster.  The scaling to other core
-    counts is inference; confirm with the selfcheck timings."""
+    """The formula in README "怎么按机器选参数".  Slice scan (offline, one NUMA node = 24 physical / 48 logical cores):
+    16 slices x 4 threads = 64 decode threads was best, 32 slices no faster, so decode threads = 4/3 x logical cores
+    (capped at 64).  Nodes 0+1 (96 logical) only ran 16 x 4.  OMP 12 was measured against 1 only.  Other core counts
+    are extrapolation; confirm with the selfcheck timings."""
     env = {}
     exact = all(decisions[k]["ok"] for k in ("m2_seg_decode", "m2_copyfree_resize", "m2_pipe_resize"))
     env["VLLM_VIDEO_TTFT_PRESET"] = "all" if exact and decisions["m2_vision_chunk"]["ok"] else "exact" if exact else "off"
@@ -138,7 +139,7 @@ def suggest(c, decisions, free_phys, g, tp):
     omp = max(1, min(12, P // 4))               # resize/patchify threads in the API process
     env["OMP_NUM_THREADS"] = str(omp)
     if decisions["m2_seg_decode"]["ok"]:
-        d = min(64, (2 * L) // 3)               # decode threads: 64 on 96 logical cores was the measured best
+        d = min(64, (4 * L) // 3)               # decode threads: 64 on 48 logical cores was the measured best
         t = 4 if d >= 16 else 1
         env["M2_SEG_THREADS"] = str(t)
         env["M2_SEG_N"] = str(max(2, min(16, d // t)))
