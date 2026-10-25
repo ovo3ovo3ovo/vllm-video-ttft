@@ -102,6 +102,23 @@ def _worker_backend(own):
     vcfg = own.hf_config.vision_config
     return get_vit_attn_backend(head_size=vcfg.hidden_size // vcfg.num_heads, dtype=own.dtype)
 
+def _tower_weight_files(model_dir):
+    """The safetensors files holding `model.visual.*`: from the shard index when the checkpoint is sharded, else the
+    single unsharded model.safetensors (small models such as Qwen3-VL-2B ship one file and no index)."""
+    import json
+    index = os.path.join(model_dir, "model.safetensors.index.json")
+    if os.path.exists(index):
+        with open(index) as f:
+            weight_map = json.load(f)["weight_map"]
+        files = sorted({fn for k, fn in weight_map.items() if k.startswith("model.visual.")})
+    elif os.path.exists(os.path.join(model_dir, "model.safetensors")):
+        files = ["model.safetensors"]
+    else:
+        raise RuntimeError(f"no model.safetensors.index.json or model.safetensors in {model_dir}")
+    if not files:
+        raise RuntimeError(f"no model.visual.* weights listed in {index}")
+    return files
+
 class _Runner:
     """One tower and one thread per process; parts run in arrival order (requests share it)."""
     _inst, _ilock = None, threading.Lock()
@@ -176,8 +193,7 @@ class _Runner:
             with set_default_torch_dtype(own.dtype), target:
                 tower = Qwen3_VisionTransformer(hf.vision_config, norm_eps=getattr(hf, "rms_norm_eps", 1e-6),
                                                 prefix="visual")
-            idx = json.load(open(os.path.join(mc.model, "model.safetensors.index.json")))["weight_map"]
-            files = sorted({f for k, f in idx.items() if k.startswith("model.visual.")})
+            files = _tower_weight_files(mc.model)
             w = []
             for fn in files:
                 with safe_open(os.path.join(mc.model, fn), "pt") as f:
