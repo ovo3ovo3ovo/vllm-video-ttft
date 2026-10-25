@@ -6,13 +6,13 @@ _tower_weight_files (d50d776: read a single unsharded model.safetensors when the
   m2_seg_decode       slice-parallel OpenCV decode (+ skip non-reference frames, background buffer release)   any model on vLLM's OpenCV path
   m2_copyfree_resize  resize/patchify without the extra copies                                                 Qwen3-VL video processor only
   m2_pipe_resize      resize/patchify while the decoder is still running                                       Qwen3-VL video processor only
-  m2_vision_chunk     vision tower on finished blocks, overlapped with decode (changes bf16 last bits)         Qwen3-VL vision tower only
+  m2_vision_chunk     vision tower on finished blocks, overlapped with decode (output not bit-identical)       Qwen3-VL vision tower only
 
 Every sub-plugin reads its switch on every call (M2_* = "1"), so they can all be registered and stay inert.
 This wrapper only adds: a preset, machine-dependent defaults, a version gate and one log line saying what is on.
   VLLM_VIDEO_TTFT_PRESET = off (default) | exact | all
     exact: M2_SEG_DECODE M2_SEG_SKIP_NONREF M2_COPYFREE_RESIZE M2_PIPE_RESIZE   (pixel_values bit-identical to vLLM)
-    all:   exact + M2_VISION_CHUNK                                             (tower output differs in bf16 last bits)
+    all:   exact + M2_VISION_CHUNK                                             (tower output not bit-identical, median relative diff 2.9%)
   A switch set explicitly (e.g. M2_PIPE_RESIZE=0) wins over the preset.
 """
 import logging, os, sys

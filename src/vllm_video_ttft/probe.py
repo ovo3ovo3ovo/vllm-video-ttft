@@ -111,7 +111,8 @@ def decide(c, m, g, model, tp):
                             "why": "Qwen3-VL vision tower only; needs m2_pipe_resize and ~3 GiB free on one GPU "
                                    f"({len(vc_gpu)} GPU(s) have >= 3.5 GiB free right now; a vLLM server started with "
                                    "--gpu-memory-utilization leaves room only if you lower it); changes the tower "
-                                   "output in bf16 last bits"},
+                                   "output: not bit-identical vs. the per-GPU tower (34 of 100 test videos identical; median relative "
+                                   "diff 2.9% on the rest)"},
     }
     return out, free_phys
 
