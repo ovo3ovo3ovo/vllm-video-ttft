@@ -390,7 +390,7 @@ This section is inferred from the code and from single-request measurements. We 
 
 - Currently supports only vLLM 0.31.0, transformers 5.17.0 and opencv-python-headless 5.0.0.93. The plugins replace internal functions of these libraries: with a different vLLM or transformers version they log one warning and don't load; with a different opencv version, the frame-skipping path turns itself off.
 - torch 2.13.0+cu130 is not listed as a dependency: install the cu130 build following the PyTorch website first, then install this package.
-- Tested on only one 8×RTX 5090 machine. On a different machine, especially one with fewer cores, the gains will be different.
+- Measured on two machines: 8×RTX 5090 (Qwen3.8-Flash-Next, the full set of measurements above) and one RTX 3080 under WSL2 (Qwen3-VL-2B and Gemma-4-E2B, TTFT only, see [Results on another machine](#results-on-another-machine-rtx-3080-20-gb-wsl2-2b-class-models)). On other machines, especially ones with fewer than 8 physical cores, the gains will be different.
 - Only single-request TTFT was measured, not high-concurrency throughput (4/8 concurrency only verified bit-identical results and no hangs). For high-concurrency settings see [High concurrency](#high-concurrency-inferred-not-measured) above; that section is inferred.
 - Most of a short clip's TTFT is prefill (the language model computing on the GPU), so the plugins save little there.
 - Frame skipping only helps videos with B-frames or other non-reference frames; videos with only I and P frames take the original path automatically.
