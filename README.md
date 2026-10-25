@@ -329,7 +329,7 @@ Same 5 length groups × 3 videos, one request at a time, 16-token answers, TTFT 
 
 - Short clips are never segmented, so they gain nothing.
 - Engine-side time (`vllm:request_prefill_time_seconds`, from scheduling to the first token) is 9–23% of baseline TTFT on videos over 2 minutes and 45–83% on the shorter groups; the plugins only shorten what comes before it.
-- On Qwen3-VL-2B every plugin request had a shorter engine-side time than the baseline for the same video (median 0.59×): the vision tower ran in the API server on every request.
+- On Qwen3-VL-2B all 132 plugin requests had a shorter engine-side time than the baseline for the same video (at most 0.80×, median 0.59×). A request whose chunked vision tower was not served would run the tower in the engine and come out near 1.0×, so this shows the tower ran in the API server on every request (inferred from engine-side time; the run did not log a per-request served count).
 - Outputs: on Qwen3-VL-2B, 2 of 15 videos gave a different 16-token answer with the plugins (the same in both plugin starts), as expected from the chunked vision tower, which is not bit-identical. On Gemma-4-E2B the plugins change no input; its answers vary between server starts with or without the plugins.
 
 ## How to verify it yourself
