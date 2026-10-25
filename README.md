@@ -64,7 +64,7 @@ VLLM_VIDEO_TTFT_PRESET=exact vllm serve /path/to/model --mm-processor-cache-gb 0
 | LLaVA-NeXT-Video | `LlavaNextVideoForConditionalGeneration` | llava-hf/LLaVA-NeXT-Video-7B-hf | 能开 | 不生效 | 不生效 | 读代码：没有注册专门的视频后端，用默认 OpenCV；未验证，用 selfcheck 确认 |
 | LLaVA-OneVision | `LlavaOnevisionForConditionalGeneration` | llava-hf/llava-onevision-qwen2-7b-ov-hf | 能开 | 不生效 | 不生效 | 同上 |
 | InternVL | `InternVLChatModel` 等 | OpenGVLab/InternVL3-8B | 能开 | 不生效 | 不生效 | 同上 |
-| Gemma 系（带视频的） | `Gemma4ForConditionalGeneration` 等 | — | 能开 | 不生效 | 不生效 | 同上 |
+| Gemma 系（带视频的） | `Gemma4ForConditionalGeneration` 等 | google/gemma-4-E2B-it | 能开 | 不生效 | 不生效 | 同上 |
 | GLM-4.1V / GLM-4.5V / GLM-4.6V | `Glm4vForConditionalGeneration` 等 | — | 能开 | 不生效 | 不生效 | 读代码：后端 `opencv_dynamic` / `glm46v` 继承默认 OpenCV 路径 |
 | GLM-5-Next 视频 | — | — | **不生效** | 不生效 | 不生效 | 读代码：它的后端重写了 `read_frames`，切段解码会自动让路（日志 `loader overrides read_frames`） |
 | Molmo2、OpenPangu-VL | — | — | 推断：可能能开 | 不生效 | 不生效 | 推断：它们直接调用 `decode_video`，没核实最后是不是走 `decode_opencv` |
