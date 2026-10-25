@@ -172,7 +172,7 @@ def main():
         "suggested_env": env, "suggested_vllm_args": args,
         "notes": [
             "Only time-to-first-token of single video requests was measured (answers cut at 16 tokens).",
-            "m2_seg_decode keeps 0.9-2.6 GiB resident for its worker pool and uses ~30 CPU core-seconds per long video.",
+            "m2_seg_decode: a segmented request uses ~31 CPU core-seconds on average (12-57 by length); the worker pool keeps a median 0.85-1.0 GiB resident, at most 2.6 GiB.",
             "Run `python -m vllm_video_ttft.selfcheck VIDEO...` before serving to confirm bit-identical inputs.",
         ],
     }, ensure_ascii=False, indent=1))
