@@ -29,7 +29,7 @@ VLLM_VIDEO_TTFT_PRESET=exact vllm serve /path/to/model --mm-processor-cache-gb 0
 | 跳过非参考帧 | `M2_SEG_SKIP_NONREF=1` | 解码：没被抽中、也不被别的帧参考的帧不解 | 同上，叠在切段解码上 | 不改 | 总耗时持平（只有 I/P 帧的长片，帧表那一步多 0.03–0.05 s，被波动盖住）；只对含 B 帧或非参考帧的视频有用 |
 | 去掉缩放切块里多余的拷贝 | `M2_COPYFREE_RESIZE=1` | 缩放切块 | 只限 Qwen3-VL 系 | 不改 | 无 |
 | 边解码边缩放 | `M2_PIPE_RESIZE=1` | 缩放切块和解码重叠 | 只限 Qwen3-VL 系；要求 `--mm-processor-cache-gb 0` | 不改 | 多一个缩放线程 |
-| 视觉塔分块叠进流水线 | `M2_VISION_CHUNK=1` | 视觉塔和解码、缩放重叠，在 API 进程里算 | 只限 Qwen3-VL 系；依赖边解码边缩放 | **改**：视觉塔输出 bf16 末位不同（相对差中位 2.9%） | 一张卡上多放一份视觉塔（Qwen3.8 实测最多 3.0 GiB） |
+| 视觉塔分块叠进流水线 | `M2_VISION_CHUNK=1` | 视觉塔和解码、缩放重叠，在 API 进程里算 | 只限 Qwen3-VL 系；依赖边解码边缩放 | **改**：视觉塔输出不逐位相同（相对差中位 2.9%） | 一张卡上多放一份视觉塔（Qwen3.8 实测最多 3.0 GiB） |
 
 **预设**：`VLLM_VIDEO_TTFT_PRESET`
 - `off`（默认）：装了也什么都不做。
@@ -76,7 +76,7 @@ VLLM_VIDEO_TTFT_PRESET=exact vllm serve /path/to/model --mm-processor-cache-gb 0
 
 | 情况 | 别开哪个 | 为什么 |
 |---|---|---|
-| 要求输出和 vLLM 逐位相同 | 视觉塔分块 | 它改视觉塔输出的 bf16 末位。我们在 Qwen3.8 上考过 250 题，没有精度下降，但不是逐位相同 |
+| 要求输出和 vLLM 逐位相同 | 视觉塔分块 | 它让视觉塔输出不再逐位相同（相对差中位 2.9%，不只是末位舍入）。我们在 Qwen3.8 上考过 250 题，没有精度下降，但不是逐位相同 |
 | 开了视频剪枝（`--video-pruning-rate > 0`，EVS / VidCom2） | 视觉塔分块 | 剪枝要看完整段视频才决定保留哪些 token，分块就不等价了；插件会拒绝分块，交回 worker 自己的视觉塔 |
 | 一个请求里有多段视频 | 视觉塔分块 | 不支持，自动交回 worker |
 | 开着处理器缓存（`--mm-processor-cache-gb > 0`） | 边解码边缩放、视觉塔分块 | 缓存命中时不会重新解码，流水线插件会让路。我们的测量都是 `--mm-processor-cache-gb 0` |
