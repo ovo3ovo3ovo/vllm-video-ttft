@@ -57,7 +57,7 @@ VLLM_VIDEO_TTFT_PRESET=exact vllm serve /path/to/model --mm-processor-cache-gb 0
 
 | 模型系列 | 架构名（config.json） | 例子 | 切段解码 + 跳帧 | 去拷贝 / 边解码边缩放 | 视觉塔分块 | 依据 |
 |---|---|---|---|---|---|---|
-| Qwen3.8-Flash-Next | `Qwen4ExpForConditionalGeneration` | Qwen/Qwen3.8-Flash-Next | 能开 | 能开 | 能开 | **实测**：8×5090、TP8，908 段逐位相同，服务内测速；精度：视觉塔分块 250 题（另外，原生选项"视觉塔每卡一整份"考过 500 题） |
+| Qwen3.8-Flash-Next | `Qwen4ExpForConditionalGeneration` | Qwen/Qwen3.8-Flash-Next | 能开 | 能开 | 能开 | **实测**：8×5090、TEP8（TP8 + 专家并行），908 段逐位相同，服务内测速；精度：视觉塔分块 250 题（另外，原生选项"视觉塔每卡一整份"考过 500 题） |
 | Qwen3-VL（含 MoE） | `Qwen3VLForConditionalGeneration`、`Qwen3VLMoeForConditionalGeneration` | Qwen/Qwen3-VL-2B-Instruct | 能开 | 能开 | 能开 | 读代码：同一个视频处理器（`Qwen3VLVideoProcessor`）和视觉塔类；未在服务里测，用 selfcheck 确认 |
 | Qwen3.5、Cosmos3-Edge、InternS1-Pro / InternS2 等用 Qwen3-VL 视觉塔的 | 各自不同 | — | 能开 | 看视频处理器是不是 `Qwen3VLVideoProcessor` | 推断：可能能开 | 推断：源码里复用了 Qwen3-VL 的类，但处理器和模板可能不同；用 selfcheck 确认 |
 | Qwen2.5-VL / Qwen2-VL | `Qwen2_5_VLForConditionalGeneration`、`Qwen2VLForConditionalGeneration` | Qwen/Qwen2.5-VL-7B-Instruct | 能开 | 不生效 | 不生效 | 读代码：视频后端 `qwen2_vl` 继承默认 OpenCV 路径；处理器是 `Qwen2VLVideoProcessor`，不是挂点 |
@@ -97,7 +97,7 @@ VLLM_VIDEO_TTFT_PRESET=exact vllm serve /path/to/model --mm-processor-cache-gb 0
 
 ## 按机器选参数
 
-这一节写的是通用规律，部署方按自己机器的核数和 NUMA 布局自己算。数字都来自一台机器：2 路 Xeon Platinum 8558，96 个物理核、192 个逻辑核，4 个 NUMA 节点；8×RTX 5090，TP8。凡是写"推断"的，都是从这台机器外推的，要用 selfcheck 的耗时确认。
+这一节写的是通用规律，部署方按自己机器的核数和 NUMA 布局自己算。数字都来自一台机器：2 路 Xeon Platinum 8558，96 个物理核、192 个逻辑核，4 个 NUMA 节点；8×RTX 5090，TEP8。凡是写"推断"的，都是从这台机器外推的，要用 selfcheck 的耗时确认。
 
 ### CPU：线程花在哪
 
@@ -192,13 +192,16 @@ export OMP_NUM_THREADS=12                 # 缩放切块的线程数，按上面
 export VLLM_MQ_MAX_CHUNK_BYTES_MB=256     # 只在 TP>1 时设
 numactl --cpunodebind=0 --membind=0 \
 vllm serve 模型目录 --tensor-parallel-size 8 \
+  --enable-expert-parallel \
   --mm-encoder-tp-mode data \
   --mm-processor-cache-gb 0
 ```
 
+`--enable-expert-parallel` 只有 MoE 模型才有用，我们的实测带着它（TEP8）；非 MoE 模型去掉这一行。
+
 ---
 
-## 结果（8×RTX 5090，Qwen3.8-Flash-Next，在线 FP8，TP8）
+## 结果（8×RTX 5090，Qwen3.8-Flash-Next，在线 FP8，TEP8）
 
 **口径**：只量首字等待（从发出请求到收到第一个 token），单请求，回答截在 16 个 token。插件只动第一个 token 之前的步骤，所以首字等待的数字和回答长短无关；整个请求快几倍，要看回答有多长，生成那一段没变快。
 
