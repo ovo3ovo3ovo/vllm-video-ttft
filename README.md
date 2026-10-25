@@ -60,13 +60,13 @@ Legend for the Basis column: **Measured** = run in this repo's validation; **Cod
 | Model family | Architecture (config.json) | Example | Segmented decode + frame skipping | Copy-free / pipelined resize | Chunked vision tower | Basis |
 |---|---|---|---|---|---|---|
 | Qwen3.8-Flash-Next | `Qwen4ExpForConditionalGeneration` | Qwen/Qwen3.8-Flash-Next | Yes | Yes | Yes | **Measured**: 8×5090, TEP8 (TP8 + expert parallel), 908 videos bit-identical, speed measured in a running server; accuracy: see [Accuracy (the two options that change outputs)](#accuracy-the-two-options-that-change-outputs) |
-| Qwen3-VL (incl. MoE) | `Qwen3VLForConditionalGeneration`, `Qwen3VLMoeForConditionalGeneration` | Qwen/Qwen3-VL-2B-Instruct | Yes | Yes | Yes | Code-read: same video processor (`Qwen3VLVideoProcessor`) and vision-tower class; not tested in a server, confirm with selfcheck |
+| Qwen3-VL (incl. MoE) | `Qwen3VLForConditionalGeneration`, `Qwen3VLMoeForConditionalGeneration` | Qwen/Qwen3-VL-2B-Instruct | Yes | Yes | Yes | **Measured**: RTX 3080 (WSL2), in a server, `all` preset; selfcheck 15/15 PASS, vision-tower input bit-identical; see [Results on another machine](#results-on-another-machine-rtx-3080-20-gb-wsl2-2b-class-models) |
 | Qwen3.5, Cosmos3-Edge, InternS1-Pro / InternS2 and other models that use the Qwen3-VL vision tower | Varies | — | Yes | Depends on whether the video processor is `Qwen3VLVideoProcessor` | Inferred: possibly | Inferred: the source reuses Qwen3-VL classes, but the processor and template may differ; confirm with selfcheck |
 | Qwen2.5-VL / Qwen2-VL | `Qwen2_5_VLForConditionalGeneration`, `Qwen2VLForConditionalGeneration` | Qwen/Qwen2.5-VL-7B-Instruct | Yes | No effect | No effect | Code-read: video backend `qwen2_vl` inherits the default OpenCV path; the processor is `Qwen2VLVideoProcessor`, which is not a hook point |
 | LLaVA-NeXT-Video | `LlavaNextVideoForConditionalGeneration` | llava-hf/LLaVA-NeXT-Video-7B-hf | Yes | No effect | No effect | Code-read: no dedicated video backend registered, uses the default OpenCV path; not verified, confirm with selfcheck |
 | LLaVA-OneVision | `LlavaOnevisionForConditionalGeneration` | llava-hf/llava-onevision-qwen2-0.5b-ov-hf | Yes | No effect | No effect | **Measured (processor level, CPU)**: 3 videos; under the `all` preset, pixels are bit-identical to running without the plugins; segmented decode + frame skipping took effect on the two long videos; copy-free resize, pipelined resize and the chunked vision tower all stepped aside |
 | InternVL | `InternVLChatModel` etc. | OpenGVLab/InternVL3-8B | Yes | No effect | No effect | Same as above |
-| Gemma family (with video) | `Gemma4ForConditionalGeneration` etc. | google/gemma-4-E2B-it | Yes | No effect | No effect | **Measured (processor level, CPU)**: same as the LLaVA-OneVision row |
+| Gemma family (with video) | `Gemma4ForConditionalGeneration` etc. | google/gemma-4-E2B-it | Yes | No effect | No effect | **Measured**: RTX 3080 (WSL2), in a server, segmented decode + frame skipping; selfcheck 15/15 PASS, bit-identical; see [Results on another machine](#results-on-another-machine-rtx-3080-20-gb-wsl2-2b-class-models) |
 | GLM-4.1V / GLM-4.5V / GLM-4.6V | `Glm4vForConditionalGeneration` etc. | — | Yes | No effect | No effect | Code-read: backends `opencv_dynamic` / `glm46v` inherit the default OpenCV path |
 | GLM-5-Next video | — | — | **No effect** | No effect | No effect | Code-read: its backend overrides `read_frames`, so segmented decode steps aside automatically (log `loader overrides read_frames`) |
 | Molmo2, OpenPangu-VL | — | — | Inferred: possibly | No effect | No effect | Inferred: they call `decode_video` directly; not verified whether it ends up in `decode_opencv` |
@@ -90,7 +90,7 @@ Legend for the Basis column: **Measured** = run in this repo's validation; **Cod
 
 ### What happens when a plugin doesn't take effect (Code-read)
 
-- Each reason for not taking effect is logged once as a warning (e.g. `m2_seg_decode: using vLLM's decoder (...)`, `m2_pipe_resize: not using the pipelined result (...)`, `m2_vision_chunk: not served (...)`), then vLLM's original path runs and the result is the same as without the plugin.
+- Each reason for not taking effect is logged once as a warning (e.g. `m2_seg_decode: using vLLM's decoder (...)`, `m2_pipe_resize: not using the pipelined result (...)`, `m2_vision_chunk: not served (...)`), then vLLM's original path runs and the result is the same as without the plugin. One pair of these, `m2_pipe_resize: not using the pipelined result (no precomputed result for this array)` followed by `m2_vision_chunk: not served (...)`, appears once at startup before `Application startup complete`: vLLM runs its processor on a dummy video for warm-up and memory profiling, and that video never goes through the decoder, so there is nothing to serve. It is not a real request.
 - Wrong vLLM or transformers version: the plugin logs one warning and does not register (in strict mode, startup fails).
 - Not a Qwen3-VL family model: the hooks of copy-free resize and the chunked vision tower are never called. Pipelined resize does one trial run on the first request, finds it can't get Qwen3-VL's processor parameters, remembers that failure, steps aside from then on, and logs only one line `not using the pipelined result (...)`. Measured (Gemma-4-E2B, LLaVA-OneVision, CPU, 3 videos × 2 runs each): the trial run happens once, on the first request, and 0 times after that; no exceptions, no hangs.
 - On a non-Qwen3-VL model with `M2_STRICT=1` and pipelined resize on (e.g. the `all` preset), every request raises `M2StrictError: m2_pipe_resize: could not compute this request's processor kwargs ...` instead of silently computing something wrong. The reason is that strict mode treats every "on but not in effect" as an error and doesn't distinguish "not applicable to this model" from "something went wrong". On non-Qwen models the hooks of copy-free resize and the chunked vision tower are never called, so they don't raise; pipelined resize only finds out it doesn't apply after a trial run, so it raises. Strict mode is therefore only for self-checks on Qwen3-VL. On non-Qwen models, enable only segmented decode + frame skipping (this is what probe recommends); without strict mode, pipelined resize steps aside by itself and the result is the same as without the plugins (measured 6/6).
@@ -308,6 +308,29 @@ Chunked vision tower (stacked on full vision tower per GPU; the baseline was ret
 **Conclusion**: neither option showed an accuracy drop on these questions. Note that the chunked vision tower row compares "full vision tower per GPU + chunked vision tower" stacked together against the default cross-GPU sharding; it is not the effect of the chunked vision tower alone. The differences in correct answers are within the baseline's own variation, and there were no bad outputs such as empty answers or garbled text. The number of questions is limited (500 and 250), so this only rules out a clear drop; it does not show that the two options are fully equivalent to vLLM's default. The chunked vision tower's 7 extra "hit 1024 with no answer" deserve a specific look when retesting with a larger token limit.
 
 ---
+
+## Results on another machine (RTX 3080 20 GB, WSL2, 2B-class models)
+
+Same 5 length groups × 3 videos, one request at a time, 16-token answers, TTFT measured at the client.
+
+- **Machine**: RTX 3080 20 GB (compute capability 8.6), Ryzen 7 9800X3D (8 physical cores / 16 threads, one NUMA node), WSL2 (Ubuntu 24.04) on Windows; vLLM 0.31.0, transformers 5.17.0, torch 2.13.0+cu130.
+- **Baseline**: stock vLLM, only the two caches off (`--no-enable-prefix-caching --mm-processor-cache-gb 0`), `OMP_NUM_THREADS` not set.
+- **Plugins**: what probe recommended, other arguments identical. Qwen3-VL-2B: `all` preset (all five switches), `OMP_NUM_THREADS=2 M2_SEG_N=5 M2_SEG_THREADS=4 M2_VC_DEVICE=cuda:0`. Gemma-4-E2B: only segmented decode + frame skipping (the other three are Qwen3-VL only), same thread settings.
+- Each configuration started twice; two starts of the same configuration differ by 0.96–1.09. 330 requests per model, no errors, prompt tokens identical everywhere; selfcheck 15/15 PASS on both models.
+- Speedup here = baseline group median ÷ plugin group median (not the median of per-video ratios used in the tables above).
+
+| Video type | Videos | Qwen3-VL-2B baseline | Qwen3-VL-2B plugins | Speedup | Saved per video | Gemma-4-E2B baseline | Gemma-4-E2B plugins | Speedup | Saved per video |
+|---|---|---|---|---|---|---|---|---|---|
+| Short clips (≤75 s) | 3 | 0.125 s | 0.130 s | 0.96× | −0.01 s | 0.706 s | 0.696 s | 1.01× | 0.01 s |
+| Raw video ≤2 min | 3 | 3.678 s | 2.051 s | 1.79× | 1.63 s | 1.225 s | 1.059 s | 1.16× | 0.17 s |
+| Raw video 2–10 min | 3 | 8.153 s | 2.815 s | 2.90× | 5.34 s | 3.586 s | 1.653 s | 2.17× | 1.93 s |
+| Raw video 10–30 min | 3 | 8.640 s | 3.012 s | 2.87× | 5.63 s | 3.515 s | 1.565 s | 2.25× | 1.95 s |
+| Raw video >30 min | 3 | 12.307 s | 5.911 s | 2.08× | 6.40 s | 9.264 s | 4.966 s | 1.87× | 4.30 s |
+
+- Short clips are never segmented, so they gain nothing.
+- Engine-side time (`vllm:request_prefill_time_seconds`, from scheduling to the first token) is 9–23% of baseline TTFT on videos over 2 minutes and 45–83% on the shorter groups; the plugins only shorten what comes before it.
+- On Qwen3-VL-2B every plugin request had a shorter engine-side time than the baseline for the same video (median 0.59×): the vision tower ran in the API server on every request.
+- Outputs: on Qwen3-VL-2B, 2 of 15 videos gave a different 16-token answer with the plugins (the same in both plugin starts), as expected from the chunked vision tower, which is not bit-identical. On Gemma-4-E2B the plugins change no input; its answers vary between server starts with or without the plugins.
 
 ## How to verify it yourself
 

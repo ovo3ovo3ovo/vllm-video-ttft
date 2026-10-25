@@ -56,9 +56,15 @@ def memory():
             "dev_shm_free_gib": round(shm.free / 2**30, 1) if shm else None}
 
 
+def _nvidia_smi():
+    """nvidia-smi from PATH; under WSL2 it lives in /usr/lib/wsl/lib, which is often not on PATH."""
+    return shutil.which("nvidia-smi") or next(
+        (p for p in ("/usr/lib/wsl/lib/nvidia-smi",) if os.access(p, os.X_OK)), "nvidia-smi")
+
+
 def gpus():
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=index,name,memory.total,memory.used,driver_version,compute_cap",
+        out = subprocess.run([_nvidia_smi(), "--query-gpu=index,name,memory.total,memory.used,driver_version,compute_cap",
                               "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=30).stdout
     except (OSError, subprocess.SubprocessError):
         return []
@@ -97,11 +103,13 @@ def decide(c, m, g, model, tp):
     unknown = model is None or not model.get("architectures")
     free_phys = max(1, c["physical_allowed"] - int(round(c["loadavg_1m"] or 0)))
     vc_gpu = [x for x in g if x["mem_free_mib"] >= 3500]
-    seg_ok = free_phys >= 8
+    # gate on the machine, not on this minute's load: measured to pay off down to 8 physical cores (RTX 3080 host,
+    # Ryzen 7 9800X3D, 2.2-2.9x on videos over 2 minutes); below 8 it has not been measured.  Load only sizes threads.
+    seg_ok = c["physical_allowed"] >= 8
     out = {
         "m2_seg_decode": {"ok": seg_ok, "why": ("works with any model on vLLM's default OpenCV video path; "
-                                                f"{free_phys} idle physical cores")
-                          + ("" if seg_ok else " — fewer than 8 idle cores, little to gain")},
+                                                f"{c['physical_allowed']} physical cores, {free_phys} idle now")
+                          + ("" if seg_ok else " — fewer than 8 physical cores, not measured there")},
         "m2_copyfree_resize": {"ok": qwen or unknown,
                                "why": "Qwen3-VL video processor only" + ("" if qwen else " (model is not Qwen3-VL)" if not unknown else " (model unknown: pass --model)")},
         "m2_pipe_resize": {"ok": qwen or unknown,

@@ -60,13 +60,13 @@ VLLM_VIDEO_TTFT_PRESET=exact vllm serve /path/to/model --mm-processor-cache-gb 0
 | 模型系列 | 架构名（config.json） | 例子 | 切段解码 + 跳帧 | 去拷贝 / 边解码边缩放 | 视觉塔分块 | 依据 |
 |---|---|---|---|---|---|---|
 | Qwen3.8-Flash-Next | `Qwen4ExpForConditionalGeneration` | Qwen/Qwen3.8-Flash-Next | 能开 | 能开 | 能开 | **实测**：8×5090、TEP8（TP8 + 专家并行），908 段逐位相同，服务内测速；精度见[精度（会改输出的两项）](#精度会改输出的两项) |
-| Qwen3-VL（含 MoE） | `Qwen3VLForConditionalGeneration`、`Qwen3VLMoeForConditionalGeneration` | Qwen/Qwen3-VL-2B-Instruct | 能开 | 能开 | 能开 | 读代码：同一个视频处理器（`Qwen3VLVideoProcessor`）和视觉塔类；未在服务里测，用 selfcheck 确认 |
+| Qwen3-VL（含 MoE） | `Qwen3VLForConditionalGeneration`、`Qwen3VLMoeForConditionalGeneration` | Qwen/Qwen3-VL-2B-Instruct | 能开 | 能开 | 能开 | **实测**：RTX 3080（WSL2），服务里，`all` 预设；selfcheck 15/15 PASS，送进视觉塔的输入逐位相同；见[另一台机器上的结果](#另一台机器上的结果rtx-3080-20-gbwsl22b-级小模型) |
 | Qwen3.5、Cosmos3-Edge、InternS1-Pro / InternS2 等用 Qwen3-VL 视觉塔的 | 各自不同 | — | 能开 | 看视频处理器是不是 `Qwen3VLVideoProcessor` | 推断：可能能开 | 推断：源码里复用了 Qwen3-VL 的类，但处理器和模板可能不同；用 selfcheck 确认 |
 | Qwen2.5-VL / Qwen2-VL | `Qwen2_5_VLForConditionalGeneration`、`Qwen2VLForConditionalGeneration` | Qwen/Qwen2.5-VL-7B-Instruct | 能开 | 不生效 | 不生效 | 读代码：视频后端 `qwen2_vl` 继承默认 OpenCV 路径；处理器是 `Qwen2VLVideoProcessor`，不是挂点 |
 | LLaVA-NeXT-Video | `LlavaNextVideoForConditionalGeneration` | llava-hf/LLaVA-NeXT-Video-7B-hf | 能开 | 不生效 | 不生效 | 读代码：没有注册专门的视频后端，用默认 OpenCV；未验证，用 selfcheck 确认 |
 | LLaVA-OneVision | `LlavaOnevisionForConditionalGeneration` | llava-hf/llava-onevision-qwen2-0.5b-ov-hf | 能开 | 不生效 | 不生效 | **实测（处理器级，CPU）**：3 段视频，`all` 预设下像素和不开插件逐位相同；两段长片切段 + 跳帧生效；去拷贝、边解码边缩放、视觉塔分块都让路 |
 | InternVL | `InternVLChatModel` 等 | OpenGVLab/InternVL3-8B | 能开 | 不生效 | 不生效 | 同上 |
-| Gemma 系（带视频的） | `Gemma4ForConditionalGeneration` 等 | google/gemma-4-E2B-it | 能开 | 不生效 | 不生效 | **实测（处理器级，CPU）**：同 LLaVA-OneVision 那一行 |
+| Gemma 系（带视频的） | `Gemma4ForConditionalGeneration` 等 | google/gemma-4-E2B-it | 能开 | 不生效 | 不生效 | **实测**：RTX 3080（WSL2），服务里，切段解码 + 跳帧；selfcheck 15/15 PASS，逐位相同；见[另一台机器上的结果](#另一台机器上的结果rtx-3080-20-gbwsl22b-级小模型) |
 | GLM-4.1V / GLM-4.5V / GLM-4.6V | `Glm4vForConditionalGeneration` 等 | — | 能开 | 不生效 | 不生效 | 读代码：后端 `opencv_dynamic` / `glm46v` 继承默认 OpenCV 路径 |
 | GLM-5-Next 视频 | — | — | **不生效** | 不生效 | 不生效 | 读代码：它的后端重写了 `read_frames`，切段解码会自动让路（日志 `loader overrides read_frames`） |
 | Molmo2、OpenPangu-VL | — | — | 推断：可能能开 | 不生效 | 不生效 | 推断：它们直接调用 `decode_video`，没核实最后是不是走 `decode_opencv` |
@@ -90,7 +90,7 @@ VLLM_VIDEO_TTFT_PRESET=exact vllm serve /path/to/model --mm-processor-cache-gb 0
 
 ### 插件不生效时会怎样（读代码确认）
 
-- 每种不生效的原因，在日志里只打一次 warning（例如 `m2_seg_decode: using vLLM's decoder (...)`、`m2_pipe_resize: not using the pipelined result (...)`、`m2_vision_chunk: not served (...)`），然后走 vLLM 原来的路径，结果和没装插件一样。
+- 每种不生效的原因，在日志里只打一次 warning（例如 `m2_seg_decode: using vLLM's decoder (...)`、`m2_pipe_resize: not using the pipelined result (...)`、`m2_vision_chunk: not served (...)`），然后走 vLLM 原来的路径，结果和没装插件一样。 启动时、在 `Application startup complete` 之前会出现一次 `m2_pipe_resize: not using the pipelined result (no precomputed result for this array)`，后面跟一行 `m2_vision_chunk: not served (...)`：这是 vLLM 用一段假视频做预热和显存估算，这段视频不经过解码，插件没有可用的结果，不是真实请求。
 - vLLM 或 transformers 版本不对：插件打一行 warning，不注册（严格模式下启动报错）。
 - 模型不是 Qwen3-VL 系：去拷贝和视觉塔分块的挂点根本不会被调用；边解码边缩放在第一次请求时用一次试跑发现拿不到 Qwen3-VL 的处理参数，记住这次失败，以后直接让路，日志只打一行 `not using the pipelined result (...)`。实测（Gemma-4-E2B、LLaVA-OneVision，CPU，各 3 段视频 × 2 次）：试跑只在第一个请求做 1 次，之后 0 次；没有异常，不卡住。
 - 非 Qwen3-VL 模型上开 `M2_STRICT=1` 并打开边解码边缩放（比如 `all` 预设），每个请求都会报 `M2StrictError: m2_pipe_resize: could not compute this request's processor kwargs ...`，不会悄悄算错。原因是严格模式把"开了却没生效"一律当错误，不区分"这个模型不适用"和"出了错"：去拷贝和视觉塔分块在非 Qwen 模型上挂点根本不会被调用，所以不报；边解码边缩放要先试跑一次才知道不适用，所以报。因此严格模式只在 Qwen3-VL 上用来自检；非 Qwen 模型只开切段解码 + 跳帧（probe 给的推荐就是这样），不开严格模式时边解码边缩放会自己让路，结果和不装插件一样（已实测 6/6）。
@@ -308,6 +308,29 @@ vllm serve 模型目录 --tensor-parallel-size 8 \
 **结论**：两项在这些题上都没有看到精度下降。注意视觉塔分块那一行比的是"每卡一整份 + 视觉塔分块"两项叠加对默认跨卡切分，不是视觉塔分块单独的效果。答对数的差在基线自己的波动范围内，也没有空回答、乱码这类坏输出。题数有限（500 道和 250 道），只能排除明显的下降，不能说明两项和 vLLM 默认做法完全等价；视觉塔分块"写满 1024 没给答案"多 7 道这一项，加大 token 上限复考时要专门看。
 
 ---
+
+## 另一台机器上的结果（RTX 3080 20 GB，WSL2，2B 级小模型）
+
+同样 5 个长度组 × 每组 3 段视频，一次只发一条请求，回答截在 16 个 token，在客户端计首字等待。
+
+- **机器**：RTX 3080 20 GB（计算能力 8.6），Ryzen 7 9800X3D（8 个物理核、16 线程，单个 NUMA 节点），Windows 上的 WSL2（Ubuntu 24.04）；vLLM 0.31.0、transformers 5.17.0、torch 2.13.0+cu130。
+- **基线**：vLLM 原样，只关两个缓存（`--no-enable-prefix-caching --mm-processor-cache-gb 0`），不设 `OMP_NUM_THREADS`。
+- **插件**：照 probe 的推荐，其余参数和基线一样。Qwen3-VL-2B：`all` 预设（五个开关全开），`OMP_NUM_THREADS=2 M2_SEG_N=5 M2_SEG_THREADS=4 M2_VC_DEVICE=cuda:0`。Gemma-4-E2B：只开切段解码和跳帧（另外三项只认 Qwen3-VL），线程设置相同。
+- 每种配置各起两次服务，同一配置两次之间差 0.96–1.09。每个模型 330 条请求，没有报错，prompt token 数处处相同；两个模型的 selfcheck 都是 15/15 PASS。
+- 这里的倍数 = 基线组中位 ÷ 插件组中位（不是上面两张表用的"每段比值取组中位"）。
+
+| 视频类型 | 段数 | Qwen3-VL-2B 基线 | Qwen3-VL-2B 插件 | 快几倍 | 每段省 | Gemma-4-E2B 基线 | Gemma-4-E2B 插件 | 快几倍 | 每段省 |
+|---|---|---|---|---|---|---|---|---|---|
+| 短片（≤75 s） | 3 | 0.125 s | 0.130 s | 0.96× | −0.01 s | 0.706 s | 0.696 s | 1.01× | 0.01 s |
+| 原片 ≤2 分钟 | 3 | 3.678 s | 2.051 s | 1.79× | 1.63 s | 1.225 s | 1.059 s | 1.16× | 0.17 s |
+| 原片 2–10 分钟 | 3 | 8.153 s | 2.815 s | 2.90× | 5.34 s | 3.586 s | 1.653 s | 2.17× | 1.93 s |
+| 原片 10–30 分钟 | 3 | 8.640 s | 3.012 s | 2.87× | 5.63 s | 3.515 s | 1.565 s | 2.25× | 1.95 s |
+| 原片 >30 分钟 | 3 | 12.307 s | 5.911 s | 2.08× | 6.40 s | 9.264 s | 4.966 s | 1.87× | 4.30 s |
+
+- 短片不切段，所以没有收益。
+- 引擎内时间（`vllm:request_prefill_time_seconds`，从开始调度到出第一个字）在 2 分钟以上的视频上占基线首字等待的 9–23%，较短的两组占 45–83%；插件只缩短它前面的那几步。
+- Qwen3-VL-2B 上，每一条插件请求的引擎内时间都比同一段视频的基线短（中位 0.59 倍），说明每条请求的视觉塔都挪到了 API 进程里算。
+- 输出：Qwen3-VL-2B 上，15 段里有 2 段开插件后的 16 个 token 回答和基线不同（两次插件服务之间相同），这是视觉塔分块不逐位相同造成的，符合预期。Gemma-4-E2B 上插件不改输入；它的回答在不同次起服务之间会变，开不开插件都一样。
 
 ## 怎么自己验证
 

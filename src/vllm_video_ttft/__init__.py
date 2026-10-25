@@ -144,15 +144,31 @@ def register_all():
     _guard_pipe_non_qwen()
 
 
+_LOGGERS = ("vllm_video_ttft", "m2_copyfree_resize", "m2_seg_decode", "m2_pipe_resize", "m2_vision_chunk")
+
+
+def _route_logs():
+    """Our loggers are not under vLLM's "vllm" logger, so vLLM's logging config gave them no handler: INFO lines were
+    dropped and warnings went through Python's last-resort handler.  Make "vllm" their parent: records then use vLLM's
+    handler and level, whether vLLM configures its logging before or after this plugin is loaded."""
+    vl = logging.getLogger("vllm")
+    for name in _LOGGERS:
+        lg = logging.getLogger(name)
+        if lg.parent is not vl and not lg.handlers:
+            lg.parent = vl
+
+
 def register():
     """vLLM general-plugin entry point; runs in every vLLM process, possibly more than once."""
     global _done
     if _done:
         return
     _done = True
+    _route_logs()
     preset, on = apply_defaults()
     if not any(on.values()):
-        return                             # installed but not enabled: touch nothing
+        _log.info("vllm_video_ttft %s: preset=%s, on: none", __version__, preset)
+        return                             # installed but not enabled: touch nothing else
     bad = version_problems()
     if bad and any(b.startswith(("vllm", "transformers")) for b in bad):
         msg = "vllm_video_ttft: not registered, version mismatch: " + "; ".join(bad)
