@@ -2,7 +2,7 @@ English | [简体中文](README.zh-CN.md)
 
 # vllm-video-ttft
 
-Plugins for vLLM 0.31.0 that cut the **time to first token (TTFT) of video requests**. They change the decode, resize-and-patchify and vision-tower steps. For the three options that don't use the GPU, the input sent to the vision tower is bit-identical to stock vLLM.
+Plugins for vLLM 0.31.0 that cut the **time to first token (TTFT) of video requests**. They change the decode, resize-and-patchify and vision-tower steps. For the four options that don't use the GPU (the `exact` preset), the input sent to the vision tower is bit-identical to stock vLLM.
 
 ```bash
 pip install -e .                                                   # 1. install (inside a vLLM 0.31.0 environment)
@@ -78,7 +78,7 @@ Legend for the Basis column: **Measured** = run in this repo's validation; **Cod
 
 | Situation | Don't enable | Why |
 |---|---|---|
-| Output must be bit-identical to vLLM | Chunked vision tower | It makes the vision-tower output no longer bit-identical (vs. a full vision tower per GPU, 34 of 100 videos are bit-identical; the other 66 have a median relative difference of 2.9%, max 6.25%, so this is more than last-bit rounding). The accuracy test showed no drop, see [Accuracy (the two options that change outputs)](#accuracy-the-two-options-that-change-outputs) |
+| Output must be bit-identical to vLLM | Chunked vision tower | It makes the vision-tower output no longer bit-identical (vs. a full vision tower per GPU, 34 of 100 videos are bit-identical; the other 66 have a median relative difference of 2.9%, max 6.25%, so this is more than last-bit rounding). No accuracy drop was seen on the test questions, see [Accuracy (the two options that change outputs)](#accuracy-the-two-options-that-change-outputs) |
 | Video pruning is on (`--video-pruning-rate > 0`, EVS / VidCom2) | Chunked vision tower | Pruning needs the whole video to decide which tokens to keep, so chunking is no longer equivalent; the plugin refuses to chunk and hands the work back to the worker's own vision tower |
 | More than one video in a request | Chunked vision tower | Not supported; handed back to the worker automatically |
 | Processor cache is on (`--mm-processor-cache-gb > 0`) | Pipelined resize, chunked vision tower | On a cache hit nothing is decoded again, so the pipeline plugins step aside. All our measurements use `--mm-processor-cache-gb 0` |
@@ -133,7 +133,7 @@ Decode threads can be oversubscribed: measured, 64 decode threads on 48 logical 
    - 4 threads per segment with 16 segments is best; 32 segments is no faster.
    - With 1 thread per segment, one video is already faster than vLLM's own decode at 8 segments, while the other two need 16 segments. On machines with few cores, 1 thread per segment with more segments may beat 4 threads per segment (inferred).
    - FFmpeg's own multithreading is already on: vLLM's own decode is multithreaded by default, and forcing 1 thread makes it 6–8 times slower. So on machines with few cores, segmented decode gains noticeably less than the numbers in the results tables below (inferred).
-4. **Resize-and-patchify threads (`OMP_NUM_THREADS`)**: going from 1 thread to 12 threads cuts resize-and-patchify to 0.36–0.46 of its original time, almost all of it in the "convert to tensor" step. When unset, vLLM drops the API process to 1 thread, so always set it. We did not measure whether going above 12 threads helps.
+4. **Resize-and-patchify threads (`OMP_NUM_THREADS`)**: going from 1 thread to 12 threads cuts resize-and-patchify to 0.36–0.46 of its original time, almost all of the saving is in the "convert to tensor" step. When unset, vLLM drops the API process to 1 thread, so always set it. We did not measure whether going above 12 threads helps.
 5. **Resize threads only (`M2_PIPE_RESIZE_THREADS`, only matters with pipelined resize on)**: falls back to `OMP_NUM_THREADS` when unset. Measured (offline, 15 videos, alternated with "unset" 3 times): at 4 threads and above, raw videos differ by only 1–3% and short clips by 5–8% (only a few milliseconds); 2 threads is 2–6% slower, 1 thread 5–20% slower. What slows down is the decode segment, which includes the resizing that overlaps with decode; decode itself does not get slower. With this switch set, serial runs (five levels, the full 908 videos twice) and 4/8 concurrency are all bit-identical to unset, and the thread count only applies to that request.
 
 ### CPU: rule-of-thumb formula (this is what probe uses)
@@ -163,7 +163,7 @@ M2_SEG_WNODES   = C_node
 
 | Setting | Single GPU (TP=1) | Multiple GPUs (TP>1) |
 |---|---|---|
-| `--mm-encoder-tp-mode data` | Makes no difference | Recommended: each GPU holds a full copy of the vision tower, no cross-GPU sharding. The cost is the memory of one vision-tower copy on every GPU; it changes the vision-tower output, accuracy see [Accuracy (the two options that change outputs)](#accuracy-the-two-options-that-change-outputs) |
+| `--mm-encoder-tp-mode data` | Makes no difference | Recommended: each GPU holds a full copy of the vision tower, no cross-GPU sharding. The cost is the memory of one vision-tower copy on every GPU; it changes the vision-tower output; for accuracy, see [Accuracy (the two options that change outputs)](#accuracy-the-two-options-that-change-outputs) |
 | `VLLM_MQ_MAX_CHUNK_BYTES_MB` | **Don't set it**: with only one worker, vLLM doesn't use the multiprocess executor (`vllm/config/parallel.py:1033` picks the uni executor), and this broadcast ring is only built with this value inside the multiprocess executor (`vllm/v1/executor/multiproc_executor.py:151`) | Recommended: set it larger than the largest single message of a request. Without the chunked vision tower the message is pixels (our raw videos: 106–142 MiB); with it, the message is vision features (at most 60.5 MiB across our 100 videos). The default is 16 MiB; larger messages go over zmq instead, which is noticeably slower. We use 256: the handoff time on raw videos drops to 0.59–0.65 of what it was, and TTFT gets 2–4% faster. The cost is about 10 × this value in shared memory: at 256 the broadcast ring measured 2.5 GiB, about 2.34 GiB more than the default (by formula 10 × 16 MiB = 160 MiB, not measured) |
 | `M2_VC_DEVICE` of the chunked vision tower | Use this GPU (with only one visible GPU, this plugin sets it to `cuda:0` automatically) | Must be set explicitly to a GPU with free memory |
 | Leaving GPU memory for the chunked vision tower | `--gpu-memory-utilization` has to leave room for it, otherwise it competes with the KV cache. Qwen3.8's vision tower measured up to 3.0 GiB; small models have much smaller vision towers, so estimate vision-tower parameter count × 2 bytes, plus activations | Same as on the left, only for the GPU that holds the vision tower |
@@ -172,7 +172,7 @@ M2_SEG_WNODES   = C_node
 
 vLLM ships two kinds of GPU decoding: pynvvideocodec (`--media-io-kwargs '{"video":{"backend":"pynvvideocodec"}}'`, NVDEC decodes and then copies frames back to the host) and torchcodec cuda (`{"backend":"torchcodec","device":"cuda"}`, frames stay in GPU memory). We tested both and don't recommend them by default:
 
-- **pynvvideocodec is faster than stock OpenCV but slower than segmented decode**: measured in the server, the decode step drops to 0.26–0.80 of stock OpenCV (short clips 0.26, raw-video groups 0.69–0.80), and TTFT of the >30-minute group drops to 0.74×; the plugins are still 1.10–3.80× faster than it (see results table 2). It can't be combined with segmented decode (segmented decode only takes over the OpenCV path). The decoder context takes about 1.25 GiB of GPU memory.
+- **pynvvideocodec is faster than stock OpenCV but slower than segmented decode**: measured in the server, the decode step drops to 0.26–0.80 of stock OpenCV (short clips 0.26, raw-video groups 0.69–0.80), and TTFT of the >30-minute group drops to 0.74 of stock; the plugins are still 1.10–3.80× faster than it (see results table 2). It can't be combined with segmented decode (segmented decode only takes over the OpenCV path). The decoder context takes about 1.25 GiB of GPU memory.
 - **pynvvideocodec changes pixels**: decoded pixels differ from OpenCV, by up to 17 gray levels on our videos. Its `hw_decoders` only spreads concurrent requests across decoders; it doesn't split one video for parallel decoding.
 - **torchcodec cuda runs out of memory when the GPU is full**: frames stay in GPU memory. Under `--gpu-memory-utilization 0.85`, a 305 s video needed 1.6 GiB and failed outright. It also changes pixels.
 - **When it's worth a try**: if you don't need bit-identical output, CPU is tight and the GPU has headroom (torchcodec cuda also needs enough headroom to hold every frame of a video), pynvvideocodec is worth trying.
@@ -225,7 +225,7 @@ These columns were measured in several sessions. For each step's own speedup, tr
 
 - 3 videos per length group: the shortest, the median and the longest by duration.
 - The three configurations were alternated, two passes each; two passes of the same configuration differ by only 0.98–1.01.
-- **Best native (input unchanged)**: `OMP_NUM_THREADS=12` + `--mm-encoder-tp-mode data` + `VLLM_MQ_MAX_CHUNK_BYTES_MB=256`.
+- **Best native (input unchanged)**: stock vLLM without the plugins ("native" below means the same), with `OMP_NUM_THREADS=12` + `--mm-encoder-tp-mode data` + `VLLM_MQ_MAX_CHUNK_BYTES_MB=256`.
 - **Best native (input may change)**: the previous one plus pynvvideocodec (NVDEC decoding), which changes pixels.
 - **Plugins**: the same native options as the first one, plus all plugins (`all` preset). The input to the vision tower is unchanged.
 
@@ -248,7 +248,7 @@ These columns were measured in several sessions. For each step's own speedup, tr
 #### Accuracy (the two options that change outputs)
 
 **Which ones need testing, and why**
-- The four options that don't change output (`exact` preset: segmented decode, frame skipping, copy-free resize, pipelined resize) send bit-identical input to the vision tower. The model sees exactly the same thing, so there is nothing to test.
+- The four options that don't change output (`exact` preset: segmented decode, frame skipping, copy-free resize, pipelined resize) send bit-identical input to the vision tower. The model sees exactly the same thing, so no accuracy test is needed.
 - Only two options change output, and both change the output of the vision tower:
   - vLLM's own "full vision tower per GPU" (`--mm-encoder-tp-mode data`): vs. the default cross-GPU sharding, the vision-tower output has a median relative difference of 6.2%.
   - This repo's "chunked vision tower" (`M2_VISION_CHUNK=1`): vs. a full vision tower per GPU, 34 of 100 videos are bit-identical; the other 66 have a median relative difference of 2.9%, max 6.25%.
@@ -347,7 +347,7 @@ This section is inferred from the code and from single-request measurements. We 
 
 - **Measured: on its own it barely helps TTFT**. The test ran without plugins: 4 requests arriving together, all for the same 26-second, 1080p short video sampled at 52 frames, median of 3 rounds. With 4 API processes, resize-and-patchify barely queues anymore: 11 of 12 requests start it about 0.4 s after being sent. But TTFT hardly moves: the 4th request only went from 8.84 s to 8.67 s, and the 1st actually got slower, from 3.65 s to 4.62 s.
 - **Why**: behind them there is still only one engine doing the scheduling, so the vision tower and prefill still queue; the bottleneck moves from the CPU to the GPU.
-- **Combined with the plugins: not measured**. From the code, each API process has its own GIL, which would reduce the GIL contention described above, but it can't fix the queueing on the GPU side either.
+- **Combined with the plugins: not measured**. Inferred from the code: each API process has its own GIL, which should reduce the GIL contention described above, but it can't fix the queueing on the GPU side either.
 - **If you combine them**:
   - Each API process has its own segmented-decode pool. Work out `M2_SEG_N × M2_SEG_THREADS × number of processes` together, using the rules in "Choose parameters by machine" above; don't let every process use the default 16 × 4.
   - Each pool's resident memory is a median of about 0.85–1.0 GiB, up to about 2.6 GiB; multiply by the number of processes.
@@ -355,7 +355,7 @@ This section is inferred from the code and from single-request measurements. We 
 
 ### Recommendations
 
-- Low concurrency, TTFT matters: turn on all four plugins (`all`).
+- Low concurrency, TTFT matters: turn everything on (`all` preset).
 - High concurrency, throughput matters: turn on segmented decode, frame skipping and copy-free resize; leave the chunked vision tower off and use `--mm-encoder-tp-mode data`, so that each GPU holds a full vision tower.
 - Pipelined resize: it doesn't change output and can stay on. But it starts one extra resize-and-patchify thread per request in the API process, which under high concurrency competes with other requests for CPU and the GIL, so the gain may shrink (inferred, not measured).
 - More API processes: measured on its own, it barely helps TTFT; combined with the plugins, not measured. If you do turn it on, divide the pool's segment count among the processes.
