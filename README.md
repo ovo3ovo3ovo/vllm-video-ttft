@@ -84,7 +84,7 @@ Legend for the Basis column: **Measured** = run in this repo's validation; **Cod
 | Processor cache is on (`--mm-processor-cache-gb > 0`) | Pipelined resize, chunked vision tower | On a cache hit nothing is decoded again, so the pipeline plugins step aside. All our measurements use `--mm-processor-cache-gb 0` |
 | A different decode backend (`--media-io-kwargs '{"video":{"backend":"pynvvideocodec" or "torchcodec"}}'`) | Segmented decode, frame skipping, and the pipeline that depends on them | Segmented decode only takes over the OpenCV path; with another backend there is nothing to take over |
 | `frame_recovery=True` | Segmented decode | vLLM's bad-frame recovery scan is not reimplemented; it falls back to the original path automatically |
-| High concurrency, CPU is tight | Be careful with segmented decode | A segmented request averages about 31 CPU core-seconds (12–57 by video length), resident memory up to 2.6 GiB; we only verified bit-identical results at 4/8 concurrency and never measured high-concurrency throughput, see [High concurrency](#high-concurrency-inferred-not-measured) |
+| High concurrency, CPU is tight | Be careful with segmented decode | A segmented request averages about 31 CPU core-seconds (12–57 by video length), resident memory up to 2.6 GiB; on 8×RTX 5090 with FP8 on one 8-GPU service, measured throughput at 16–32 concurrency is 13–21% higher than stock (the 175-token, 32-concurrency cell only counts as "maybe"), see [High concurrency](#high-concurrency) |
 | A GPU with no free memory | Chunked vision tower | It needs one extra copy of the vision tower; when it doesn't fit, the plugin reports OOM and hands the work back to the worker (raises in strict mode) |
 | All videos are short (raw frame count < `M2_SEG_MIN_SRC_FRAMES`, default 2642) | Segmented decode does nothing even when on | Short videos are not segmented; most of a short video's TTFT is prefill, so the plugins save little |
 
@@ -356,13 +356,13 @@ Non-Qwen model (`llava-hf/llava-onevision-qwen2-0.5b-ov-hf`, CPU, the same 3 vid
 
 ---
 
-## High concurrency (inferred, not measured)
+## High concurrency
 
-This section is inferred from the code and from single-request measurements. We only verified that concurrent results are bit-identical to serial and that nothing hangs: the four options that don't change output at 4 and 8 concurrency, the chunked vision tower only at 4 concurrency (24 requests). Concurrent throughput was not measured. Load-test it yourself before a high-concurrency deployment.
+Concurrent throughput was measured on one 8×RTX 5090 machine (FP8 on one 8-GPU service, 15 videos, closed loop at 1–32 concurrency); the result is the first item below. The other items were not measured and are marked as inferred. Load-test on your own machine before deploying.
 
 ### Effect of the plugins on throughput
 
-- **Segmented decode doesn't reduce the total amount of decoding**: it spreads one request's decode across many cores. Under high concurrency, stock vLLM also decodes several requests at once and fills the CPU, so both sides end up limited by total CPU. The extra work on the plugin side is re-decoding from the previous keyframe for each segment, plus inter-process communication; the savings are the non-reference frames that frame skipping doesn't decode. So full-load throughput is estimated to be about the same as stock, and the TTFT advantage shrinks as concurrency rises. A segmented request averages about 31 CPU core-seconds (12–57 by video length); combine that with your core count to estimate the CPU-side ceiling.
+- **Segmented decode under concurrency**: Measured (unit 6; 8×RTX 5090, FP8 on one 8-GPU TP+EP service, 15 videos, closed loop at 1–32 concurrency, answers of 16 and 175 tokens, throughput over the steady-state window; stock = `OMP_NUM_THREADS=12`, `--mm-encoder-tp-mode data`, `VLLM_MQ_MAX_CHUNK_BYTES_MB=256`; plugins = stock plus segmented decode (16 segments), non-reference frame skipping, copy-free handoff and pipelined resize): at 16–32 concurrency, throughput is 13–21% higher than stock; the 175-token, 32-concurrency cell (1.08× and 1.18× in the two starts) only counts as "maybe" under our rule, every other cell is a real difference. TTFT: for short answers the median advantage at 1, 4, 8, 16 and 32 concurrency is 1.78, 1.59, 1.27, 1.11 and 1.08×, shrinking with concurrency, while P90 is still 1.46× faster at 32; for long answers it is 1.76, 1.44, 1.42, 1.51 and 2.81×: it drops from 1.76× at 1 to 1.4–1.5× at 4–16, then jumps to 2.81× at 32, with P90 1.69× and 1.71× faster at 16 and 32. At full load the plugins hit GPU prefill first: at 32 concurrency with short answers, prefill is 27.8 s of the TTFT and the frontend only 1.9 s. A segmented request averages about 31 CPU core-seconds (12–57 by video length).
 - **The vision tower queues on both sides**: without plugins, the vision tower was measured to run one request after another (4 requests arriving together started their vision tower at 2.68, 4.62, 5.96 and 7.31 s). With the chunked vision tower, that copy is fixed in the API process on the `M2_VC_DEVICE` GPU, and it also competes for compute with the language model on that GPU. Under high concurrency, whether the plugin side or the stock side clogs first was not measured.
 - **A single API process contends for the GIL**: decode scheduling, the resize threads and the vision tower all live in the same Python process. The extra ~11 ms of decode on short clips is inferred to come from this (not confirmed with a profiler). It gets more visible as concurrency rises.
 
@@ -375,6 +375,7 @@ This section is inferred from the code and from single-request measurements. We 
   - Each API process has its own segmented-decode pool. Work out `M2_SEG_N × M2_SEG_THREADS × number of processes` together, using the rules in "Choose parameters by machine" above; don't let every process use the default 16 × 4.
   - Each pool's resident memory is a median of about 0.85–1.0 GiB, up to about 2.6 GiB; multiply by the number of processes.
   - `M2_VC_DEVICE` takes only one GPU, so the vision towers of all API processes land on that same GPU, about 3 GiB of GPU memory each.
+  - Measured (unit 6, NVFP4 with eight single-GPU replicas): 8 API processes sharing one listening socket get very uneven shares of requests; at 32 concurrency the busiest process took 39–46%. Together with only 2 workers in each process's decode pool, the frontend took 20 s. To run several, give each process its own SO_REUSEPORT socket, or put a reverse proxy in front that hands out connections in turn.
 
 ### Recommendations
 
@@ -391,7 +392,7 @@ This section is inferred from the code and from single-request measurements. We 
 - Currently supports only vLLM 0.31.0, transformers 5.17.0 and opencv-python-headless 5.0.0.93. The plugins replace internal functions of these libraries: with a different vLLM or transformers version they log one warning and don't load; with a different opencv version, the frame-skipping path turns itself off.
 - torch 2.13.0+cu130 is not listed as a dependency: install the cu130 build following the PyTorch website first, then install this package.
 - Measured on two machines: 8×RTX 5090 (Qwen3.8-Flash-Next, the full set of measurements above) and one RTX 3080 under WSL2 (Qwen3-VL-2B and Gemma-4-E2B, TTFT only, see [Results on another machine](#results-on-another-machine-rtx-3080-20-gb-wsl2-2b-class-models)). On other machines, especially ones with fewer than 8 physical cores, the gains will be different.
-- Only single-request TTFT was measured, not high-concurrency throughput (4/8 concurrency only verified bit-identical results and no hangs). For high-concurrency settings see [High concurrency](#high-concurrency-inferred-not-measured) above; that section is inferred.
+- Concurrent throughput was measured only on one 8×RTX 5090 machine with FP8 on one 8-GPU service (15 videos, closed loop at 1–32 concurrency, answers of 16 and 175 tokens); other machines and other parallel layouts were not measured. See [High concurrency](#high-concurrency) above.
 - Most of a short clip's TTFT is prefill (the language model computing on the GPU), so the plugins save little there.
 - Frame skipping only helps videos with B-frames or other non-reference frames; videos with only I and P frames take the original path automatically.
 - The pipeline is not supported with `--mm-processor-cache-gb > 0` (see "When not to enable" above).
